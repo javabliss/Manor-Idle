@@ -1,0 +1,63 @@
+name: Build Android APK
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEYSTORE: ${{ secrets.KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip project
+        run: unzip -q manor-idle.zip -d project
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install
+        working-directory: project/manor-idle
+        run: npm install
+
+      - name: Add Android
+        working-directory: project/manor-idle
+        run: |
+          npx cap add android
+          npx cap sync android
+          sed -i 's/<activity /<activity android:screenOrientation="portrait" /' android/app/src/main/AndroidManifest.xml
+
+      - name: Build debug APK
+        working-directory: project/manor-idle/android
+        run: ./gradlew assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manor-idle-debug-apk
+          path: project/manor-idle/android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Build signed release APK
+        if: env.HAS_KEYSTORE == 'true'
+        working-directory: project/manor-idle
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          echo "$KS_B64" | base64 -d > release.jks
+          (cd android && ./gradlew assembleRelease)
+          BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          $BT/zipalign -f -p 4 android/app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
+          $BT/apksigner sign --ks release.jks --ks-pass pass:$KS_PASS --ks-key-alias $KEY_ALIAS --out manor-idle-release.apk aligned.apk
+
+      - uses: actions/upload-artifact@v4
+        if: env.HAS_KEYSTORE == 'true'
+        with:
+          name: manor-idle-release-apk
+          path: project/manor-idle/manor-idle-release.apk
